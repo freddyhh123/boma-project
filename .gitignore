@@ -1,0 +1,8 @@
+Data/
+Data/Boma\ Project/
+dataset/
+Legacy/
+patches/
+*.csv
+/.vscode*
+*.png
