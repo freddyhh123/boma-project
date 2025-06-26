@@ -58,4 +58,4 @@ def viewer_loop():
 
 
 #split_patches("patches")
-#viewer_loop()
+viewer_loop()
