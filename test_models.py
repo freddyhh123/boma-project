@@ -8,17 +8,47 @@ import timm
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import pandas as pd
+from collections import Counter
+import time
 
 DATA_DIR = "dataset"
 BATCH_SIZE = 32
-EPOCHS = 2
+EPOCHS = 10
 IMG_SIZE = 256
 NUM_CLASSES = 3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using: {DEVICE}")
 
+model_list = [
+    #"convnextv2_tiny",               # Pure CNN
+    #"swin_large_patch4_window12_384",# Transformer
+    #"efficientnetv2_rw_m",           # Pure CNN
+    #"swinv2_base_window8_256",       # Transformer - Bigger
+    #"edgenext_base",                 # Efficient hybrid + attention
+    "swin_base_patch4_window7_224",   # Transformer
+    "vit_base_patch16_224.orig_in21k_ft_in1k",  # Baseline ViT
+    "beit_base_patch16_224",         # SSL transformer
+    "mobilevitv2_100.cvnets_in1k",   # Lightweight transformer
+]
 
-def train_loop(model_name):
+# This specifies what size inputs need to be for each model
+# The script can rescale to any size.
+model_input_sizes = {
+    "convnextv2_tiny": 224,
+    "efficientnetv2_rw_m": 224,
+    "swinv2_base_window8_256": 256,
+    "edgenext_base": 224,
+    "swin_base_patch4_window7_224": 224,
+    "swin_large_patch4_window12_384": 384,
+    "vit_base_patch16_224.orig_in21k_ft_in1k": 224,
+    "beit_base_patch16_224": 224,
+    "mobilevitv2_100.cvnets_in1k": 256
+}
+
+
+def train_loop(model_name, balanced_weight=False):
+    IMG_SIZE = model_input_sizes[model_name]
+
     transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor()
@@ -33,13 +63,27 @@ def train_loop(model_name):
     model = timm.create_model(model_name, pretrained=True, num_classes=NUM_CLASSES)
     model.to(DEVICE)
 
-    criterion = nn.CrossEntropyLoss()
+    if balanced_weight:
+        labels = [label for _, label in train.samples]
+        class_counts = Counter(labels)
+        num_classes = len(train.classes)
+        total = sum(class_counts.values())
+        weights = [total / class_counts[i] for i in range(num_classes)]
+        weights = weights / weights.sum() * num_classes
+        weights = torch.tensor(weights, dtype=torch.float32)
+        weights = weights.to(DEVICE)
+        criterion = torch.nn.CrossEntropyLoss(weight=weights)
+    else:
+        criterion = nn.CrossEntropyLoss()
+
     optomizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     train_acc_list = []
+    train_loss = []
+    start_time = time.time()
     for epoch in range(EPOCHS):
         model.train()
-        total_loss, correct, total = 0,0,0
+        total_loss, correct, total,running_loss = 0,0,0,0.0
         
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
@@ -56,11 +100,13 @@ def train_loop(model_name):
             total += labels.size(0)
         
         acc = correct / total
-        avg_loss = total_loss / total
+        epoch_loss = total_loss / total
+        train_loss.append(epoch_loss)
         train_acc_list.append(acc)
         
-        print(f"[Epoch {epoch+1}] Loss: {avg_loss:.4f} | Accuracy: {acc:.2%}")
-        
+        print(f"[Epoch {epoch+1}] Loss: {epoch_loss:.4f} | Accuracy: {acc:.2%}")
+    end_time = time.time()
+
     model.eval()
     all_preds, all_labels = [],[]
     with torch.no_grad():
@@ -95,22 +141,13 @@ def train_loop(model_name):
         "model" : model_name,
         "test_acc" : test_acc,
         "train_acc" : sum(train_acc_list) / EPOCHS,
-        "train_loss" : avg_loss,
+        "train_loss" : train_loss,
         "f1_macro" : cr['macro avg']['f1-score'],
-        "f1_info" : cr
+        "f1_info" : cr,
+        "train_time" : end_time - start_time
     }
-    
 
-model_list = [
-    "convnextv2_tiny", 
-    "efficientnetv2_rw_m", - Maybe low accuracy
-    #"vit_small_patch16_224", - Patch size alteration required
-    "swinv2_base_window8_256",
-    "maxvit_tiny_rw_256",
-    #"deit3_base_patch16_224", - Patch size alteration required
-    "coatnet_2",
-    #"beitv2_base_patch16_224" - Patch size alteration required
-]
+
 results_df = pd.DataFrame()
 
 for model in model_list:
