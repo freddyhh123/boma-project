@@ -16,15 +16,16 @@ BATCH_SIZE = 32
 EPOCHS = 10
 IMG_SIZE = 256
 NUM_CLASSES = 3
+RUNS = 5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Using: {DEVICE}")
 
 model_list = [
-    #"convnextv2_tiny",               # Pure CNN
+    "convnextv2_tiny",               # Pure CNN
     #"swin_large_patch4_window12_384",# Transformer
-    #"efficientnetv2_rw_m",           # Pure CNN
-    #"swinv2_base_window8_256",       # Transformer - Bigger
-    #"edgenext_base",                 # Efficient hybrid + attention
+    "efficientnetv2_rw_m",           # Pure CNN
+    "swinv2_base_window8_256",       # Transformer - Bigger
+    "edgenext_base",                 # Efficient hybrid + attention
     "swin_base_patch4_window7_224",   # Transformer
     "vit_base_patch16_224.orig_in21k_ft_in1k",  # Baseline ViT
     "beit_base_patch16_224",         # SSL transformer
@@ -52,6 +53,11 @@ def train_loop(model_name, balanced_weight=False):
     transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor()
+    ])
+    
+    model_results = pd.DataFrame(columns=[
+    "model", "run", "test_acc", "train_acc", "train_loss",
+    "f1_macro", "f1_info", "train_time"
     ])
 
     train = ImageFolder(os.path.join(DATA_DIR, "train"), transform=transform)
@@ -81,79 +87,84 @@ def train_loop(model_name, balanced_weight=False):
     train_acc_list = []
     train_loss = []
     start_time = time.time()
-    for epoch in range(EPOCHS):
-        model.train()
-        total_loss, correct, total,running_loss = 0,0,0,0.0
-        
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+    for run in range(RUNS):
+        for epoch in range(EPOCHS):
+            model.train()
+            total_loss, correct, total,running_loss = 0,0,0,0.0
             
-            optomizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optomizer.step()
+            for inputs, labels in train_loader:
+                inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+                
+                optomizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optomizer.step()
+                
+                total_loss += loss.item() * inputs.size(0)
+                preds = outputs.argmax(dim=1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
             
-            total_loss += loss.item() * inputs.size(0)
-            preds = outputs.argmax(dim=1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-        
-        acc = correct / total
-        epoch_loss = total_loss / total
-        train_loss.append(epoch_loss)
-        train_acc_list.append(acc)
-        
-        print(f"[Epoch {epoch+1}] Loss: {epoch_loss:.4f} | Accuracy: {acc:.2%}")
-    end_time = time.time()
-
-    model.eval()
-    all_preds, all_labels = [],[]
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs,labels = inputs.to(DEVICE), labels.to(DEVICE)
-            outputs = model(inputs)
-            preds = outputs.argmax(dim=1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            acc = correct / total
+            epoch_loss = total_loss / total
+            train_loss.append(epoch_loss)
+            train_acc_list.append(acc)
             
-    test_acc = sum(int(p == l) for p, l in zip(all_preds, all_labels)) / len(all_preds)
-    print(f"Test Accuracy: {test_acc:.2%}") 
+            print(f"[Epoch {epoch+1}] Loss: {epoch_loss:.4f} | Accuracy: {acc:.2%}")
+        end_time = time.time()
 
-    target_names = ["non-settlement", "abandoned", "active"]
-    print("\nClassification Report:")
-    cr = classification_report(all_labels, all_preds, target_names=target_names,output_dict=True)
-    print(cr)
+        model.eval()
+        all_preds, all_labels = [],[]
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                inputs,labels = inputs.to(DEVICE), labels.to(DEVICE)
+                outputs = model(inputs)
+                preds = outputs.argmax(dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                
+        test_acc = sum(int(p == l) for p, l in zip(all_preds, all_labels)) / len(all_preds)
+        print(f"Test Accuracy: {test_acc:.2%}") 
 
-    cm = confusion_matrix(all_labels,all_preds)
-    plt.figure(figsize=(5,4))
-    plt.imshow(cm, cmap="Blues")
-    plt.title(f"Confusion Matrix for {model_name}")
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.xticks(ticks=[0, 1, 2], labels=target_names, rotation=45)
-    plt.yticks(ticks=[0, 1, 2], labels=target_names)
-    plt.colorbar()
-    plt.tight_layout()
-    plt.savefig(f"cm_{model_name}.png")
+        target_names = ["non-settlement", "abandoned", "active"]
+        print("\nClassification Report:")
+        cr = classification_report(all_labels, all_preds, target_names=target_names,output_dict=True)
+        print(cr)
 
-    return {
-        "model" : model_name,
-        "test_acc" : test_acc,
-        "train_acc" : sum(train_acc_list) / EPOCHS,
-        "train_loss" : train_loss,
-        "f1_macro" : cr['macro avg']['f1-score'],
-        "f1_info" : cr,
-        "train_time" : end_time - start_time
-    }
+        cm = confusion_matrix(all_labels,all_preds)
+        plt.figure(figsize=(5,4))
+        plt.imshow(cm, cmap="Blues")
+        plt.title(f"Confusion Matrix for {model_name}")
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.xticks(ticks=[0, 1, 2], labels=target_names, rotation=45)
+        plt.yticks(ticks=[0, 1, 2], labels=target_names)
+        plt.colorbar()
+        plt.tight_layout()
+        plt.savefig(f"cm_{model_name}.png")
 
+        model_run =  {
+            "model" : model_name,
+            "run" : run,
+            "test_acc" : test_acc,
+            "train_acc" : sum(train_acc_list) / EPOCHS,
+            "train_loss" : train_loss,
+            "f1_macro" : cr['macro avg']['f1-score'],
+            "f1_info" : cr,
+            "train_time" : end_time - start_time
+        }
+        
+        pd.concat([model_results, pd.DataFrame([model_run])], ignore_index=True)
+    
+    return model_results
 
 results_df = pd.DataFrame()
 
 for model in model_list:
     print(f"Loading {model}")
-    results = train_loop(model)
-    results_df = pd.concat([results_df, pd.DataFrame([results])], ignore_index=True)
+    model_results = train_loop(model)
+    results_df = pd.concat([results_df, model_results], ignore_index=True)
     results_df.to_csv("model_results.csv")
 
 
