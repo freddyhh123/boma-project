@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import ast
 import json
 import os
-import numpy as np
 
 OUTPUT_DIR = "graphs"
 MODEL_FOLDER = None
@@ -34,10 +33,8 @@ def aggregate_data(df):
     agg.columns = ["_".join(col).strip() for col in agg.columns.values]
     return agg.reset_index()
 
-
-
 def count_examples():
-    df = pd.read_csv("2021_training_patches/patches_metadata.csv")
+    df = pd.read_csv("patches/patches_metadata.csv")
     df["label"].value_counts().sort_index().plot(kind='bar', color='lightcoral',zorder=3)
     plt.title("Label Distribution in Patch Dataset")
     plt.xlabel("Label (0 = No settlement, 1 = Abandoned, 2 = Active)")
@@ -102,27 +99,18 @@ def training_time(data):
 def per_class_metrics(df, metric):
     df_class = {cls: [] for cls in CLASSES}
     grouped = df.groupby('model_name_short')
-
     for model, group in grouped:
         for cls in CLASSES:
             scores = [row["f1_info"][cls][metric] for _, row in group.iterrows()]
             df_class[cls].append((model, sum(scores) / len(scores)))
-
-    models = sorted(df['model_name_short'].unique())
-    x = np.arange(len(models))
-    bar_width = 0.8 / len(CLASSES)  # space bars evenly
-
-    plt.figure()
-    for idx, cls in enumerate(CLASSES):
-        model_scores = dict(df_class[cls])
-        y = [model_scores[model] for model in models]
-        plt.bar(x + idx * bar_width, y, bar_width, label=cls)
-
+    for cls in CLASSES:
+        models, scores = zip(*df_class[cls])
+        plt.plot(models, scores, marker='o', label=cls)
     plt.title(f"Per-Class {metric.capitalize()} (mean across runs)")
     plt.ylabel(metric.capitalize())
     plt.xlabel("Model")
-    plt.xticks(x + bar_width * (len(CLASSES) - 1) / 2, models, rotation=45)
     plt.legend()
+    plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig(os.path.join(MODEL_FOLDER, f"{metric}_class.png"))
     plt.close()
@@ -130,7 +118,6 @@ def per_class_metrics(df, metric):
 def plot_data(filename):
     df = prepare_data(filename)
     df_agg = aggregate_data(df)
-    
     accuracy_plot(df_agg)
     loss_curve(df)
     f1_comparison(df_agg)
@@ -138,10 +125,7 @@ def plot_data(filename):
     per_class_metrics(df, 'f1-score')
     per_class_metrics(df, 'recall')
 
-#plot_data("model_results-normal.csv")
-
-
-#count_examples()
+plot_data("model_results-final.csv")
 
     
 

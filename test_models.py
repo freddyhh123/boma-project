@@ -10,7 +10,6 @@ import pandas as pd
 from collections import Counter
 import time
 import copy
-import requests
 from torch.cuda.amp import autocast, GradScaler
 
 torch.manual_seed(42)
@@ -21,28 +20,27 @@ torch.cuda.reset_peak_memory_stats()
 
 DATA_DIR = "dataset"
 BATCH_SIZE = 32
-MAX_EPOCHS = 100
+MAX_EPOCHS = 50
 PATIENCE = 10
 IMG_SIZE = 256
 NUM_CLASSES = 3
 RUNS = 5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-MODEL_WEIGHTS_PATH = "maxvit_large_tf_512.in1k_run4_best.pth"
 print(f"Using: {DEVICE}")
 
 os.makedirs("saved_models", exist_ok=True)
 
 model_list = [
-    #"convnextv2_tiny",               # Pure CNN
-    #"efficientnetv2_rw_m",           # Pure CNN
-    #"swinv2_base_window8_256",       # Transformer - Bigger
-    #"edgenext_base",                 # Efficient hybrid + attention
-    #"maxvit_large_tf_512.in1k",
-    #"swin_base_patch4_window7_224",   # Transformer
-    #"vit_base_patch16_224.orig_in21k_ft_in1k",  # Baseline ViT
-    #"beit_base_patch16_224",         # SSL transformer
-    #"mobilevitv2_100.cvnets_in1k",   # Lightweight transformer
-    #"swin_large_patch4_window12_384",# Transformer - Biggest,
+    "convnextv2_tiny",               # Pure CNN
+    "efficientnetv2_rw_m",           # Pure CNN
+    "swinv2_base_window8_256",       # Transformer - Bigger
+    "edgenext_base",                 # Efficient hybrid + attention
+    "maxvit_large_tf_512.in1k",
+    "swin_base_patch4_window7_224",   # Transformer
+    "vit_base_patch16_224.orig_in21k_ft_in1k",  # Baseline ViT
+    "beit_base_patch16_224",         # SSL transformer
+    "mobilevitv2_100.cvnets_in1k",   # Lightweight transformer
+    "swin_large_patch4_window12_384",# Transformer - Biggest,
 ]
 
 # This specifies what size inputs need to be for each model
@@ -60,31 +58,22 @@ model_input_sizes = {
     "mobilevitv2_100.cvnets_in1k": 256
 }
 
-def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_freeze=False):
+def train_loop(model_name, balanced_weight=False):
     IMG_SIZE = model_input_sizes[model_name]
 
     # Reformat the images depending on the model
-    transform_test = transforms.Compose([
+    transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.ToTensor()
     ])
-
-    transform_train = transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-        transforms.RandomRotation(10),
-        transforms.ToTensor()
-    ])
-
+    
     model_results = pd.DataFrame(columns=[
     "model", "run", "test_acc", "train_acc", "train_loss",
     "f1_macro", "f1_info", "train_time", "epochs_ran"
     ])
 
-    train = ImageFolder(os.path.join(DATA_DIR, "train"), transform=transform_train)
-    test = ImageFolder(os.path.join(DATA_DIR, "test"), transform=transform_test)
+    train = ImageFolder(os.path.join(DATA_DIR, "train"), transform=transform)
+    test = ImageFolder(os.path.join(DATA_DIR, "test"), transform=transform)
 
     # Make a validation set out of the train set (20%)
     val_size = int(0.2* len(train))
@@ -97,17 +86,9 @@ def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_fr
     val_loader = DataLoader(val_subset,batch_size=BATCH_SIZE)
 
     for run in range(RUNS):
-        if tuning_freeze == False:
-            model = timm.create_model(model_name, pretrained=True, num_classes=NUM_CLASSES)
-            model.to(DEVICE)
-        else:
-            model = timm.create_model(model_name, pretrained=False, num_classes=NUM_CLASSES)
-            model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location=DEVICE))
-            model.to(DEVICE)
-            for name, param in model.named_parameters():
-                if "classifier" not in name and "fc" not in name and "head" not in name:
-                    param.requires_grad = False
-                    
+        model = timm.create_model(model_name, pretrained=True, num_classes=NUM_CLASSES)
+        model.to(DEVICE)
+
         # Implemtation of balanced weighting to try and increase active/abandoned performance WIP
         if balanced_weight:
             subset_indices = train_subset.indices
@@ -119,18 +100,14 @@ def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_fr
             weights = weights / weights.sum() * num_classes
             weights = torch.tensor(weights, dtype=torch.float32)
             weights = weights.to(DEVICE)
-            criterion = torch.nn.CrossEntropyLoss(weight=weights, label_smoothing=0.05)
-        if manual_weight:
-            manual_weights = torch.tensor([0.5, 1.5, 1.5], dtype=torch.float32).to(DEVICE)
-            criterion = torch.nn.CrossEntropyLoss(weight=manual_weights, label_smoothing=0.05)
+            criterion = torch.nn.CrossEntropyLoss(weight=weights)
         else:
-            criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+            criterion = nn.CrossEntropyLoss()
 
         scaler = GradScaler()
-        optomizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optomizer, T_max=MAX_EPOCHS)
+        optomizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-        best_f1 = 0.0
+        best_val_acc = 0.0
         patience_epochs = 0
         best_model_state = None
         train_acc_list = []
@@ -153,7 +130,6 @@ def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_fr
                 scaler.scale(loss).backward()
                 scaler.step(optomizer)
                 scaler.update()
-                scheduler.step()
                 
                 total_loss += loss.item() * inputs.size(0)
                 preds = outputs.argmax(dim=1)
@@ -168,7 +144,6 @@ def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_fr
             # The validation set is used for early stopping
             model.eval()
             val_loss, val_correct, val_total = 0,0,0
-            all_preds, all_labels = [], []
             with torch.no_grad():
                 for inputs, labels in val_loader:
                     inputs,labels = inputs.to(DEVICE), labels.to(DEVICE)
@@ -179,22 +154,17 @@ def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_fr
                     val_loss += loss.item() * inputs.size(0)
                     val_correct += (preds == labels).sum().item()
                     val_total += labels.size(0)
-                    all_preds.extend(preds.cpu().numpy())
-                    all_labels.extend(labels.cpu().numpy())
-
             val_acc = val_correct / val_total
             val_loss_epoch = val_loss / val_total
             val_loss_list.append(val_loss_epoch)
-            cr = classification_report(all_labels, all_preds, output_dict=True)
-            f1_macro = cr['macro avg']['f1-score']
 
             print(f"[Run {run} | Epoch {epoch+1}] "
-            f"Train Acc: {train_acc:.2%} | Val Acc: {val_acc:.2%} | "
-            f"Train Loss: {epoch_loss:.4f} | Val Loss: {val_loss_epoch:.4f}| F1 Macro: {f1_macro:.4f}")
+      f"Train Acc: {train_acc:.2%} | Val Acc: {val_acc:.2%} | "
+      f"Train Loss: {epoch_loss:.4f} | Val Loss: {val_loss_epoch:.4f}")
         
             # Check if this epoch is the best if so then replace
-            if f1_macro > best_f1:
-                best_f1 = f1_macro
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
                 patience_epochs = 0
                 best_model_state = copy.deepcopy(model.state_dict())
             else:
@@ -246,10 +216,11 @@ def train_loop(model_name, balanced_weight=False, manual_weight=False, tuning_fr
     
     return model_results
 
+
 results_df = pd.DataFrame()
 
 for model in model_list:
     print(f"Loading {model}")
-    model_results = train_loop(model,manual_weight=True)
+    model_results = train_loop(model)
     results_df = pd.concat([results_df, model_results], ignore_index=True)
     results_df.to_csv("model_results.csv", index=False)
