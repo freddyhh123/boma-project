@@ -6,3 +6,8 @@ patches/
 *.csv
 /.vscode*
 *.png
+*.tif
+output/
+Clipped/
+bad_patches/
+
