@@ -18,7 +18,7 @@ DATASET_DIR = "dataset/train"
 BASE_FOLDER = "dataset"
 LABELS = ["0","1","2"]
 
-
+# Function that splits patches into test/train
 def split_patches(patch_folder):
     df = pd.read_csv(f"{patch_folder}/patches_metadata.csv")
     if "include" in df:
@@ -34,6 +34,7 @@ def split_patches(patch_folder):
             dst = os.path.join(dst_dir, os.path.basename(src))
             shutil.copy(src,dst)
 
+# Helper function to check for patches marked as bad and drop them from metadata file
 def clean_patch_metadata(patch_folder, bad_patch_folder):
     file = os.path.join(patch_folder, "patches_metadata.csv")
     df = pd.read_csv(file)
@@ -43,7 +44,8 @@ def clean_patch_metadata(patch_folder, bad_patch_folder):
         lambda x: os.path.basename(x).replace("patches/", "") not in bad_patches
     )
     df.to_csv(file,index=False)
-    
+  
+# Functions to show random images for dataset reviewing  
 def get_random_images(label_dir):
     files = [f for f in os.listdir(label_dir) if f.endswith(".png")]
     if not files:
@@ -77,6 +79,7 @@ def viewer_loop():
         if pressed is None:
             break
 
+# Split entire mosaic into patches for analysis, and write metadata file
 def process_patches(path_2013,path_2021,output_2021_dir,output_2013_dir, patch_size=256, overlap=0):
     os.makedirs(output_2021_dir, exist_ok=True)
     os.makedirs(output_2013_dir, exist_ok=True)
@@ -104,9 +107,7 @@ def process_patches(path_2013,path_2021,output_2021_dir,output_2013_dir, patch_s
         
                 patch_2021 = src_2021.read(window=window)
                 patch_2013 = ref_2013.read(window=window)
-                
-                #matched_patch = match_histograms(patch_2021,patch_2013,channel_axis=0).astype(np.float32)
-                
+                                
                 patch_name = f"patch_r{int(window.row_off)}_c{int(window.col_off)}.tif"
                 
                 patch_transform = rasterio.windows.transform(window,transform)
@@ -142,7 +143,7 @@ def process_patches(path_2013,path_2021,output_2021_dir,output_2013_dir, patch_s
     df = pd.DataFrame(metadata)
     df.to_csv("patch_metadata.csv",index=False)
     
-    
+# Match mosaics to be same size 
 def resize_mosaic():
     with rasterio.open("Data/Boma Project/Mosaic201311.tif") as ref:
         dst_height = ref.height
@@ -175,7 +176,7 @@ def resize_mosaic():
     with rasterio.open("2021_reformatted.tif", "w", **profile) as dst:
         dst.write(data)
 
-
+# Helper function to rename and add new patches
 def create_updated_metadata(original_path,new_path,output_path):
     df = pd.read_csv(original_path)
     new_filenames = set(os.listdir(new_path))
@@ -185,7 +186,7 @@ def create_updated_metadata(original_path,new_path,output_path):
     filtered_df.drop(columns=["filename_only"],inplace=True)
     filtered_df.to_csv(output_path,index=False)
 
-
+# Mistake in dataset reviewer required this function to flip labels on filenames
 def flip_filenames():
     folder_path = "2021_training_patches"
 
